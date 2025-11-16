@@ -1,72 +1,118 @@
-import pandas as pd
-from rdkit import Chem
-from rdkit.Chem import Descriptors, Descriptors3D
-from rdkit.Chem import AllChem
 import numpy as np
+from rdkit import Chem
+from rdkit.Chem import AllChem, Descriptors
+from sklearn.decomposition import PCA
+from sklearn.preprocessing import StandardScaler
+from tqdm import tqdm
+import warnings
 
 from data.preprocessing.data_loader import DataLoader
 
+warnings.filterwarnings("ignore")
+
+
 class Extractor:
-    def __init__(self):
-        data_loader = DataLoader('train')
-        self.data = data_loader.get_data().copy()
-        if 'SMILES' not in self.data.columns:
-            raise ValueError("Колонка 'SMILES' отсутствует. Сначала загрузите данные с SMILES.")
+    def __init__(
+        self,
+        morgan_bits=2048,
+        morgan_radius=2,
+        pca_variance=0.95,
+        download: bool = False
+    ):
 
-        # Генерируем признаки
-        self.features_df = self._generate_features()
+        loader = DataLoader()
+        self.raw_train_data, self.raw_test_data = loader.get_data(download=download)
 
-    def _smiles_to_mol(self, smiles):
-        """Преобразует SMILES в RDKit молекулу."""
-        if not isinstance(smiles, str) or not smiles.strip():
-            return None
-        try:
-            mol = Chem.MolFromSmiles(smiles)
+        self.processed_train_data = self.raw_train_data.copy()
+        self.processed_test_data = self.raw_test_data.copy()
+
+        self.morgan_bits = morgan_bits
+        self.morgan_radius = morgan_radius
+        self.pca_variance = pca_variance
+
+        self.scaler = None
+        self.pca = None
+
+        self.descriptor_fns = [d[1] for d in Descriptors._descList]
+
+        self._process_train()
+        self._process_test()
+
+
+    def morgan_fp(self, mol):
+        fp = AllChem.GetMorganFingerprintAsBitVect(
+            mol, self.morgan_radius, nBits=self.morgan_bits
+        )
+        return np.array(fp)
+
+
+    def rdkit_desc(self, mol):
+        if mol is None:
+            return np.zeros(len(self.descriptor_fns))
+        return np.array([fn(mol) for fn in self.descriptor_fns])
+
+
+    def extract_raw(self, smiles_list):
+        morgan_list = []
+        rdkit_list = []
+
+        for smi in tqdm(smiles_list, desc="Extracting raw features"):
+            mol = Chem.MolFromSmiles(smi)
             if mol is None:
-                return None
-            # Генерируем 3D координаты для 3D-дескрипторов
-            AllChem.EmbedMolecule(mol)
-            AllChem.UFFOptimizeMolecule(mol)
-            return mol
-        except Exception:
-            return None
+                morgan = np.zeros(self.morgan_bits)
+                rdkit = np.zeros(len(self.descriptor_fns))
+            else:
+                morgan = self.morgan_fp(mol)
+                rdkit = self.rdkit_desc(mol)
 
-    def _get_rdkit_descriptors(self, mol):
-        """Извлекает основные RDKit дескрипторы."""
-        if mol is None:
-            return {name: np.nan for name, _ in Descriptors.descList}
-        return {name: func(mol) for name, func in Descriptors.descList}
+            morgan_list.append(morgan)
+            rdkit_list.append(rdkit)
 
-    def _get_3d_descriptors(self, mol):
-        """Извлекает 3D-дескрипторы (требуют 3D-оптимизацию)."""
-        if mol is None:
-            return {name: np.nan for name, _ in Descriptors3D.descList}
-        return {name: func(mol) for name, func in Descriptors3D.descList}
+        return np.array(morgan_list), np.array(rdkit_list)
 
-    def _generate_features(self):
-        """Основная функция генерации признаков."""
-        features_list = []
-        for _, row in self.data.iterrows():
-            mol = self._smiles_to_mol(row['SMILES'])
-            desc_1d2d = self._get_rdkit_descriptors(mol)
-            desc_3d = self._get_3d_descriptors(mol)
 
-            # Объединяем все дескрипторы
-            features = {**desc_1d2d, **desc_3d}
-            features_list.append(features)
+    def _process_train(self):
+        smiles = self.raw_train_data["SMILES"].tolist()
 
-        # Создаём DataFrame с признаками
-        features_df = pd.DataFrame(features_list, index=self.data.index)
+        morgan_raw, rdkit_raw = self.extract_raw(smiles)
 
-        # Удаляем константные/неполезные признаки (по желанию)
-        features_df = features_df.select_dtypes(include=[np.number])
+        self.scaler = StandardScaler()
+        rdkit_scaled = self.scaler.fit_transform(rdkit_raw)
 
-        return features_df
+        self.pca = PCA(n_components=self.pca_variance, svd_solver="full")
+        rdkit_pca = self.pca.fit_transform(rdkit_scaled)
 
-    def get_features(self):
-        """Возвращает датафрейм с признаками."""
-        return self.features_df
+        X = np.hstack([morgan_raw, rdkit_pca])
 
-    def get_full_data_with_features(self):
-        """Возвращает исходные данные + признаки."""
-        return pd.concat([self.data, self.features_df], axis=1)
+        for i in range(X.shape[1]):
+            self.processed_train_data[f"feat_{i}"] = X[:, i]
+
+
+    def _process_test(self):
+        if self.scaler is None or self.pca is None:
+            raise RuntimeError("Train must be processed before test.")
+
+        smiles = self.raw_test_data["SMILES"].tolist()
+
+        morgan_raw, rdkit_raw = self.extract_raw(smiles)
+
+        rdkit_scaled = self.scaler.transform(rdkit_raw)
+        rdkit_pca = self.pca.transform(rdkit_scaled)
+
+        X = np.hstack([morgan_raw, rdkit_pca])
+
+        for i in range(X.shape[1]):
+            self.processed_test_data[f"feat_{i}"] = X[:, i]
+
+
+    def get_train(self):
+        return self.processed_train_data
+
+    def get_test(self):
+        return self.processed_test_data
+
+    def get_scaler(self):
+        return self.scaler
+
+    def get_pca(self):
+        return self.pca

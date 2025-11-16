@@ -1,29 +1,35 @@
 import pandas as pd
+import os
 import requests
 from tqdm import tqdm
-
 from utils.paths import TRAIN_DATA_PATH, TEST_DATA_PATH
 
+
 class DataLoader:
-    def __init__(self, split: str):
-        if split == 'train':
-            self.data = pd.read_csv(TRAIN_DATA_PATH)
-        else:
-            self.data = pd.read_csv(TEST_DATA_PATH)
+    def __init__(self):
 
-        # убираем некорректные CID
-        self.data = self.data[self.data["Pubchem_ID"] > 0]
+        self.train_data = pd.read_csv(TRAIN_DATA_PATH)
+        self.test_data = pd.read_csv(TEST_DATA_PATH)
 
-        # подключаем tqdm для apply
-        tqdm.pandas(desc="Fetching SMILES")
+        self.train_data = self.train_data[self.train_data["Pubchem_ID"] > 0]
+        self.test_data = self.test_data[self.test_data["Pubchem_ID"] > 0]
 
-        # получение SMILES
-        self.data['SMILES'] = self.data['Pubchem_ID'].progress_apply(
-            self._get_smiles_from_pubchem
-        )
 
-    def get_data(self):
-        return self.data
+    def get_data(self, download: bool = False):
+
+        if download:
+            tqdm.pandas(desc="Fetching SMILES")
+
+            self.train_data['SMILES'] = self.train_data['Pubchem_ID'].progress_apply(
+                self._get_smiles_from_pubchem
+            )
+
+            self.test_data['SMILES'] = self.test_data['Pubchem_ID'].progress_apply(
+                self._get_smiles_from_pubchem
+            )
+
+        return self.train_data, self.test_data
+
 
     def _get_smiles_from_pubchem(self, cid):
         if pd.isna(cid):

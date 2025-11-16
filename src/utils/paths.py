@@ -14,6 +14,7 @@ def find_project_root():
 PROJECT_ROOT = find_project_root()
 DATA_DIR = os.path.join(PROJECT_ROOT, 'data')
 RAW_DATA_DIR = os.path.join(DATA_DIR, 'raw')
+PROCESSED_DATA_DIR = os.path.join(DATA_DIR, 'processed')
 
-TRAIN_DATA_PATH = os.path.join(RAW_DATA_DIR, 'train_dataset.csv')
-TEST_DATA_PATH = os.path.join(RAW_DATA_DIR, 'test_features.csv')
+TRAIN_DATA_PATH = os.path.join(RAW_DATA_DIR, 'train.csv')
+TEST_DATA_PATH = os.path.join(RAW_DATA_DIR, 'test.csv')
