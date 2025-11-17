@@ -169,3 +169,8 @@ cython_debug/
 **.DS_Store**
 
 /data
+
+# CatBoost training files and directories
+catboost_info/
+*/catboost_info/
+**/catboost_info/
