@@ -37,7 +37,7 @@ class Extractor:
         if mol is None:
             return np.zeros(self.morgan_bits, dtype=np.int8)
         fp = self.morgan_generator.GetFingerprint(mol)
-        return np.array(fp, dtype=np.int8)
+        return np.array(fp.ToList(), dtype=np.int8)
 
     def rdkit_desc(self, mol):
         if mol is None:
@@ -48,7 +48,12 @@ class Extractor:
         morgan_list = []
         rdkit_list = []
         for smi in tqdm(smiles_list, desc="Extracting raw features"):
-            mol = Chem.MolFromSmiles(smi)
+            mol = None
+            if isinstance(smi, str) and smi.strip():
+                try:
+                    mol = Chem.MolFromSmiles(smi.strip())
+                except Exception:
+                    mol = None
             morgan_list.append(self.morgan_fp(mol))
             rdkit_list.append(self.rdkit_desc(mol))
         return np.stack(morgan_list), np.stack(rdkit_list)
