@@ -1,118 +1,113 @@
 import numpy as np
 from rdkit import Chem
-from rdkit.Chem import AllChem, Descriptors
-from sklearn.decomposition import PCA
-from sklearn.preprocessing import StandardScaler
+from rdkit.Chem import Descriptors, Draw
+from rdkit.Chem import rdFingerprintGenerator
 from tqdm import tqdm
-import warnings
-
 from data.preprocessing.data_loader import DataLoader
-
-warnings.filterwarnings("ignore")
+from PIL import ImageOps
 
 
 class Extractor:
     def __init__(
         self,
-        morgan_bits=2048,
-        morgan_radius=2,
-        pca_variance=0.95,
+        morgan_bits: int = 2048,
+        morgan_radius: int = 2,
+        img_size: tuple = (224, 224),
         download: bool = False
     ):
-
         loader = DataLoader()
         self.raw_train_data, self.raw_test_data = loader.get_data(download=download)
 
-        self.processed_train_data = self.raw_train_data.copy()
-        self.processed_test_data = self.raw_test_data.copy()
-
         self.morgan_bits = morgan_bits
         self.morgan_radius = morgan_radius
-        self.pca_variance = pca_variance
+        self.img_size = img_size
+        self.morgan_generator = rdFingerprintGenerator.GetMorganGenerator(
+            radius=self.morgan_radius,
+            fpSize=self.morgan_bits
+        )
 
-        self.scaler = None
-        self.pca = None
+        self.descriptor_fns = [fn for _, fn in Descriptors._descList]
+        self.n_descriptors = len(self.descriptor_fns)
 
-        self.descriptor_fns = [d[1] for d in Descriptors._descList]
+        # Хранение признаков
+        self._morgan_train = None
+        self._desc_train = None
+        self._img_train = None
 
-        self._process_train()
-        self._process_test()
+        self._morgan_test = None
+        self._desc_test = None
+        self._img_test = None
 
+        self._extract_raw_features()
 
     def morgan_fp(self, mol):
-        fp = AllChem.GetMorganFingerprintAsBitVect(
-            mol, self.morgan_radius, nBits=self.morgan_bits
-        )
-        return np.array(fp)
-
+        """Возвращает Morgan fingerprint фиксированной длины."""
+        if mol is None:
+            return np.zeros(self.morgan_bits, dtype=np.int8)
+        fp = self.morgan_generator.GetFingerprint(mol)
+        return np.array(fp.ToList(), dtype=np.int8)
 
     def rdkit_desc(self, mol):
+        """Возвращает вектор RDKit-дескрипторов."""
         if mol is None:
-            return np.zeros(len(self.descriptor_fns))
-        return np.array([fn(mol) for fn in self.descriptor_fns])
+            return np.zeros(self.n_descriptors, dtype=np.float32)
+        return np.array([fn(mol) for fn in self.descriptor_fns], dtype=np.float32)
 
+    def _mol_to_image(self, mol):
+        """
+        Преобразует молекулу в RGB изображение формы (244, 244, 3), нормализованное к [0, 1].
+        Линии молекулы яркие, фон темный.
+        """
+        target_size = (244, 244)
+
+        if mol is None:
+            return np.zeros((*target_size, 3), dtype=np.float32)
+
+        try:
+            Chem.rdDepictor.Compute2DCoords(mol)
+
+            img = Draw.MolToImage(mol, size=target_size, fitImage=True)
+
+            img_gray = img.convert("L")
+            img_gray = ImageOps.invert(img_gray)
+
+            img_array = np.array(img_gray, dtype=np.float32) / 255.0
+
+            img_rgb = np.stack([img_array]*3, axis=-1)
+
+            return img_rgb
+
+        except Exception:
+            return np.zeros((*target_size, 3), dtype=np.float32)
 
     def extract_raw(self, smiles_list):
+        """Извлекает Morgan-фингерпринты, дескрипторы и изображения по списку SMILES."""
         morgan_list = []
         rdkit_list = []
+        img_list = []
 
         for smi in tqdm(smiles_list, desc="Extracting raw features"):
-            mol = Chem.MolFromSmiles(smi)
-            if mol is None:
-                morgan = np.zeros(self.morgan_bits)
-                rdkit = np.zeros(len(self.descriptor_fns))
-            else:
-                morgan = self.morgan_fp(mol)
-                rdkit = self.rdkit_desc(mol)
+            mol = None
+            if isinstance(smi, str) and smi.strip():
+                try:
+                    mol = Chem.MolFromSmiles(smi.strip())
+                except Exception:
+                    mol = None
 
-            morgan_list.append(morgan)
-            rdkit_list.append(rdkit)
+            morgan_list.append(self.morgan_fp(mol))
+            rdkit_list.append(self.rdkit_desc(mol))
+            img_list.append(self._mol_to_image(mol))
 
-        return np.array(morgan_list), np.array(rdkit_list)
+        return (
+            np.stack(morgan_list),      # (N, morgan_bits)
+            np.stack(rdkit_list),       # (N, n_descriptors)
+            np.stack(img_list)          # (N, H, W, 1)
+        )
 
+    def _extract_raw_features(self):
+        """Выполняет извлечение признаков один раз при инициализации."""
+        train_smiles = self.raw_train_data["SMILES"].tolist()
+        test_smiles = self.raw_test_data["SMILES"].tolist()
 
-    def _process_train(self):
-        smiles = self.raw_train_data["SMILES"].tolist()
-
-        morgan_raw, rdkit_raw = self.extract_raw(smiles)
-
-        self.scaler = StandardScaler()
-        rdkit_scaled = self.scaler.fit_transform(rdkit_raw)
-
-        self.pca = PCA(n_components=self.pca_variance, svd_solver="full")
-        rdkit_pca = self.pca.fit_transform(rdkit_scaled)
-
-        X = np.hstack([morgan_raw, rdkit_pca])
-
-        for i in range(X.shape[1]):
-            self.processed_train_data[f"feat_{i}"] = X[:, i]
-
-
-    def _process_test(self):
-        if self.scaler is None or self.pca is None:
-            raise RuntimeError("Train must be processed before test.")
-
-        smiles = self.raw_test_data["SMILES"].tolist()
-
-        morgan_raw, rdkit_raw = self.extract_raw(smiles)
-
-        rdkit_scaled = self.scaler.transform(rdkit_raw)
-        rdkit_pca = self.pca.transform(rdkit_scaled)
-
-        X = np.hstack([morgan_raw, rdkit_pca])
-
-        for i in range(X.shape[1]):
-            self.processed_test_data[f"feat_{i}"] = X[:, i]
-
-
-    def get_train(self):
-        return self.processed_train_data
-
-    def get_test(self):
-        return self.processed_test_data
-
-    def get_scaler(self):
-        return self.scaler
-
-    def get_pca(self):
-        return self.pca
+        self._morgan_train, self._desc_train, self._img_train = self.extract_raw(train_smiles)
+        self._morgan_test, self._desc_test, self._img_test = self.extract_raw(test_smiles)
