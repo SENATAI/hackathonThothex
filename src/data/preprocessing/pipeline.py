@@ -6,12 +6,14 @@ class Pipeline(Processor):
         morgan_bits: int = 2048,
         morgan_radius: int = 2,
         pca_variance: float = 0.95,
+        feature_type: str = "both",
         download: bool = False
     ):
         super().__init__(
             morgan_bits=morgan_bits,
             morgan_radius=morgan_radius,
             pca_variance=pca_variance,
+            feature_type=feature_type,
             download=download
         )
 
