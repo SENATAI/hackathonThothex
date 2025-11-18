@@ -22,6 +22,8 @@ dependencies = [
     "torchvision>=0.22.0",
     "transformers>=4.57.1",
     "datasets>=4.4.1",
+    "catboost>=1.2.8",
+    "optuna>=4.6.0",
 ]
 
 [tool.uv.sources]
